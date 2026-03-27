@@ -1,0 +1,24 @@
+object_6d_tracker_node:
+  ros__parameters:
+    prompt: "wrench"
+    debug_level: 2 # 0: 关闭, 1: 基础打印, 2: 追踪可视化 3. 完整
+    resize_scale: 0.375 # 缩放因子，用于调整输入图像大小以减小显存负担
+
+    # --- Foundation Pose 本地算法配置 ---
+    fp_root_dir: "/home/x/DexterousAssembly/FoundationPose"
+    obj_path: "/home/x/DexterousAssembly/dexterous_assembly_ws/src/object_6d_tracker/resource/models/sam3d/006_wrench_aligned.obj"
+    est_iterations: 5
+    track_iterations: 2
+
+    # --- Grounded-SAM-2 远程服务器通信配置 ---
+    server: "a@x.x.x.x"
+    ssh_port: x
+    remote_python_exec: "/home/x/miniconda3/envs/sam2/bin/python"
+    remote_script_path: "linkerhand/Grounded-SAM-2/single_image_infer.py"
+    ssh_key_path: "/home/x/.ssh/id_x" # 本地私钥绝对路径，留空则使用默认 ~/.ssh/id_rsa
+
+    # --- ROS2 配置 ---
+    queue_size: 2 # 消息队列大小
+    slop: 0.05 # 时间戳同步容忍度
+    camera_frame_id: "camera_color_optical_frame" # 相机光心坐标系 (作为 TF 的 parent)
+    object_frame_id: "target_part" # 目标物体坐标系 (作为 TF 的 child)
