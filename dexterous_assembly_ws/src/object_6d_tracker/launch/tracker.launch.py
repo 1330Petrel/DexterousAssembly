@@ -35,12 +35,12 @@ def generate_launch_description():
         emulate_tty=True,  # 确保终端日志颜色正常显示
         prefix=[LaunchConfiguration("python_exec"), " -u"],  # 使用指定的 Python 解释器并启用无缓冲输出
         parameters=[LaunchConfiguration("config_file")],
-        # 如果相机话题名与代码里写死的不一样，可重映射 (Remap)
+        # 如果相机话题名与代码里不一样可重映射
         # remappings=[
-        #     ('/camera/color/image_raw', '/your_camera/color/image_raw'),
-        #     ('/camera/aligned_depth_to_color/image_raw', '/your_camera/aligned_depth_to_color/image_raw'),
-        #     ('/camera/color/camera_info', '/your_camera/color/camera_info'),
-        # ]
+        #     ("/rgb/camera_info", "/zed/zed_node/rgb/color/rect/camera_info"),
+        #     ("/rgb/image_raw", "/zed/zed_node/rgb/color/rect/image"),
+        #     ("/depth_to_rgb/image_raw", "/zed/zed_node/depth/depth_registered"),
+        # ],
     )
 
     return LaunchDescription([config_arg, python_exec_arg, tracker_node])

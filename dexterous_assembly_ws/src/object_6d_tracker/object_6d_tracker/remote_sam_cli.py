@@ -157,4 +157,3 @@ class RemoteSAMCLI:
                 subprocess.run(ssh_cleanup_cmd)
             except:
                 pass
-

@@ -32,7 +32,7 @@ setup(
         ],extra_compile_args={'gcc': c_flags, 'nvcc': nvcc_flags}),
     ],
     include_dirs=[
-        "/home/petrel/anaconda3/envs/foundationpose310/include/eigen3",
+        "/home/x/anaconda3/envs/fdp/include/eigen3",
         "/usr/include/eigen3",
     ],
     cmdclass={

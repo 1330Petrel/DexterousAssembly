@@ -9,8 +9,10 @@ from tf2_ros import TransformBroadcaster
 import cv2
 from enum import Enum
 import numpy as np
+import queue
 import threading
 import time
+import torch
 
 from .remote_sam_cli import RemoteSAMCLI
 from .pose_estimator import PoseEstimator
@@ -76,6 +78,7 @@ class TrackerNode(Node):
             "debug": self.get_parameter("debug_level").value,
         }
 
+        self.p_debug = True if self.get_parameter("debug_level").value > 0 else False
         self.p_prompt = self.get_parameter("prompt").value
         self.p_resize_scale = self.get_parameter("resize_scale").value
 
@@ -126,15 +129,26 @@ class TrackerNode(Node):
 
         # 订阅话题并进行时间戳软同步 (slop=0.05秒容忍度)
         self.rgb_sub = message_filters.Subscriber(
-            self, Image, "/rgb/image_raw", #qos_profile=image_qos
+            self,
+            Image,
+            "/rgb/image_raw",  # qos_profile=image_qos
         )
         self.depth_sub = message_filters.Subscriber(
-            self, Image, "/depth_to_rgb/image_raw", #qos_profile=image_qos
+            self,
+            Image,
+            "/depth_to_rgb/image_raw",  # qos_profile=image_qos
         )
         self.ts = message_filters.ApproximateTimeSynchronizer(
-            [self.rgb_sub, self.depth_sub], queue_size=self.get_parameter("queue_size").value, slop=self.get_parameter("slop").value
+            [self.rgb_sub, self.depth_sub],
+            queue_size=self.get_parameter("queue_size").value,
+            slop=self.get_parameter("slop").value,
         )
         self.ts.registerCallback(self.sync_callback)
+
+        if self.p_debug:
+            # 初始化异步可视化组件
+            self.vis_pub = self.create_publisher(Image, "~/debug_image", 10)
+            self.vis_queue = queue.Queue(maxsize=4)
 
         self.get_logger().info(
             f"Object 6D Tracker Node initialized with prompt: '{self.p_prompt}'"
@@ -144,8 +158,21 @@ class TrackerNode(Node):
         """获取内参后自毁订阅"""
         if self.cached_K is None:
             self.cached_K = np.array(info_msg.k, dtype=np.float64).reshape(3, 3)
+
             if self.p_resize_scale != 1.0:
                 self.cached_K[0:2, :] *= self.p_resize_scale
+
+                h, w = info_msg.height, info_msg.width
+                self.new_size = (
+                    int(w * self.p_resize_scale),
+                    int(h * self.p_resize_scale),
+                )
+                self.get_logger().info(
+                    f"Original image size: ({w}, {h}), resized image size: {self.new_size}"
+                )
+            else:
+                self.new_size = None
+
             self.get_logger().info("CameraInfo cached: K = \n" + str(self.cached_K))
             # 拿到内参后立刻注销订阅者
             self.destroy_subscription(self.info_sub)
@@ -164,15 +191,15 @@ class TrackerNode(Node):
             cv_depth_mm = self.bridge.imgmsg_to_cv2(depth_msg, "16UC1")
 
             # 对输入下采样以降低显存占用
-            if self.p_resize_scale != 1.0:
-                h, w = cv_rgb.shape[:2]
-                new_size = (int(w * self.p_resize_scale), int(h * self.p_resize_scale))
+            if self.new_size:
+                new_size = self.new_size
                 cv_rgb = cv2.resize(cv_rgb, new_size, interpolation=cv2.INTER_LINEAR)
                 cv_depth_mm = cv2.resize(
                     cv_depth_mm, new_size, interpolation=cv2.INTER_NEAREST
                 )
 
-            cv_depth_m = cv_depth_mm.astype(np.float32) * 0.001  # 转换为米
+            cv_depth_m = cv_depth_mm.astype(np.float32)
+            cv_depth_m *= 0.001  # 转换为米
 
         except Exception as e:
             self.get_logger().error(f"Image processing error: {e}")
@@ -222,7 +249,7 @@ class TrackerNode(Node):
             bgr_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
             mask = self.sam_cli.get_mask(bgr_image, self.p_prompt)
 
-            if mask.sum() == 0:
+            if not np.any(mask):
                 self.get_logger().warning("[SSH] Got empty mask. Retrying...")
                 # 退回 WAIT_FIRST_FRAME 重新尝试
                 self.state = State.WAIT_FIRST_FRAME
@@ -237,7 +264,7 @@ class TrackerNode(Node):
             self.get_logger().error(
                 f"[SSH Error] Failed to get mask, please check network and server configuration: {e}"
             )
-            # 退回 WAIT_FIRST_FRAME 重新尝试或直接让节点退出
+            # 退回 WAIT_FIRST_FRAME 重新尝试
             self.state = State.WAIT_FIRST_FRAME
 
     def task_init_foundation_pose(self) -> None:
@@ -266,6 +293,10 @@ class TrackerNode(Node):
         if self.mask_ready and self.fp_ready:
             self.get_logger().info("Running first-frame 6D pose Registration...")
             try:
+                if self.p_debug:
+                    threading.Thread(target=self.vis_worker, daemon=True).start()
+
+                torch.cuda.empty_cache()
                 # 调用核心算法的首帧注册
                 rgb, depth, stamp = self.first_frame_data
                 pose_matrix = self.estimator.register(
@@ -278,8 +309,14 @@ class TrackerNode(Node):
                 # 发布初始 TF
                 self.publish_tf(pose_matrix, stamp)
 
+                # 异步渲染 debug 图像
+                if self.p_debug:
+                    self.vis_queue.put_nowait((rgb, pose_matrix))
+
                 # 切入追踪模式
-                self.get_logger().info("\033[92mInitialization complete, TRACKING STARTED\033[0m")
+                self.get_logger().info(
+                    "\033[92mInitialization complete, TRACKING STARTED\033[0m"
+                )
                 self.state = State.TRACKING
                 self.last_fps_time = time.time()
                 del self.first_frame_data, self.first_mask
@@ -301,6 +338,10 @@ class TrackerNode(Node):
             pose_matrix = self.estimator.track(rgb=rgb, depth=depth, K=self.cached_K)
             # 发布 TF 树
             self.publish_tf(pose_matrix, stamp)
+
+            # 异步渲染 debug 图像
+            if self.p_debug and not self.vis_queue.full():
+                self.vis_queue.put_nowait((rgb, pose_matrix))
 
             # FPS 统计
             self.frame_count += 1
@@ -330,6 +371,31 @@ class TrackerNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"Failed to publish TF: {e}")
+
+    def vis_worker(self):
+        """后台渲染线程处理 OpenCV 绘制与消息序列化"""
+        self.get_logger().info(
+            "\033[92m[Vis]\033[0m Async Visualization Worker started, run 'rqt_image_view /object_6d_tracker_node/debug_image'"
+        )
+        while rclpy.ok():
+            try:
+                rgb, pose = self.vis_queue.get(timeout=1.0)
+
+                # 绘制图像
+                vis_img = self.estimator.draw_pose_vis(pose, rgb, self.cached_K)
+                # 直接按 RGB 编码发布
+                vis_msg = self.bridge.cv2_to_imgmsg(vis_img, "rgb8")
+                self.vis_pub.publish(vis_msg)
+
+            except queue.Empty:
+                pass
+            except Exception as e:
+                self.get_logger().error(f"[Vis] Failed to render visualization: {e}")
+
+    def destroy_node(self) -> None:
+        if self.estimator:
+            self.estimator.shutdown()
+        super().destroy_node()
 
 
 def main(args=None) -> None:

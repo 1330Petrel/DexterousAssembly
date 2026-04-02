@@ -39,7 +39,7 @@ def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_rati
   method = 'box_3d'
   tf_to_crops = compute_crop_window_tf_batch(pts=mesh.vertices, H=H, W=W, poses=ob_in_cams, K=K, crop_ratio=crop_ratio, out_size=(render_size[1], render_size[0]), method=method, mesh_diameter=mesh_diameter)
 
-  logging.debug("make tf_to_crops done")
+  logging.info("make tf_to_crops done")
 
   B = len(ob_in_cams)
   poseA = torch.as_tensor(ob_in_cams, dtype=torch.float, device='cuda')
@@ -67,7 +67,7 @@ def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_rati
   if cfg['use_normal']:
     normal_rs = torch.cat(normal_rs, dim=0).permute(0,3,1,2)  #(B,3,H,W)
 
-  logging.debug("render done")
+  logging.info("render done")
 
   rgbBs = kornia.geometry.transform.warp_perspective(torch.as_tensor(rgb, dtype=torch.float, device='cuda').permute(2,0,1)[None].expand(B,-1,-1,-1), tf_to_crops, dsize=render_size, mode='bilinear', align_corners=False)
   if rgb_rs.shape[-2:]!=cfg['input_resize']:
@@ -87,7 +87,7 @@ def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_rati
     normalAs = None
     normalBs = None
 
-  logging.debug("warp done")
+  logging.info("warp done")
 
   mesh_diameters = torch.ones((len(rgbAs)), dtype=torch.float, device='cuda')*mesh_diameter
   pose_data = BatchPoseData(rgbAs=rgbAs, rgbBs=rgbBs, depthAs=None, depthBs=None, normalAs=normalAs, normalBs=normalBs, poseA=poseA, poseB=None, xyz_mapAs=xyz_mapAs, xyz_mapBs=xyz_mapBs, tf_to_crops=tf_to_crops, Ks=Ks, mesh_diameters=mesh_diameters)
@@ -149,7 +149,7 @@ class PoseRefinePredictor:
     self.model.load_state_dict(ckpt)
 
     self.model.cuda().eval()
-    logging.debug("init done")
+    logging.info("init done")
     self.last_trans_update = None
     self.last_rot_update = None
 
@@ -193,8 +193,8 @@ class PoseRefinePredictor:
       for b in range(0, pose_data.rgbAs.shape[0], bs):
         A = torch.cat([pose_data.rgbAs[b:b+bs].cuda(), pose_data.xyz_mapAs[b:b+bs].cuda()], dim=1).float()
         B = torch.cat([pose_data.rgbBs[b:b+bs].cuda(), pose_data.xyz_mapBs[b:b+bs].cuda()], dim=1).float()
-        logging.debug("forward start")
-        with torch.amp.autocast_mode.autocast(enabled=self.amp, device_type='cuda'):
+        logging.info("forward start")
+        with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=self.amp):
           output = self.model(A,B)
         for k in output:
           output[k] = output[k].float()

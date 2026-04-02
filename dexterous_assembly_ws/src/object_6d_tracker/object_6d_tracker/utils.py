@@ -75,4 +75,3 @@ def check_image_is_valid(image: np.ndarray) -> bool:
     if np.std(image) < 1.0:
         return False
     return True
-

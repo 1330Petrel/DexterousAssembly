@@ -1,12 +1,12 @@
 import os
 import sys
-import cv2
+import shutil
 import imageio
 import logging
 import numpy as np
 import time
 import trimesh
-import threading
+from concurrent.futures import ThreadPoolExecutor
 
 
 class PoseEstimator:
@@ -34,19 +34,25 @@ class PoseEstimator:
         :param obj_path: 目标物体的 .obj 模型绝对路径
         :param est_iterations: 首帧配准的姿态优化迭代次数
         :param track_iterations: 连续帧追踪的姿态优化迭代次数
-        :param debug: 调试等级 (0: 关闭, 1: 保存变换矩阵, 2: 基础可视化, 3: 完整调试
+        :param debug: 调试等级 (0: 关闭, 1: 基础可视化, 2: 保存变换矩阵, 3: 完整调试)
         :param debug_dir: 调试输出文件保存目录
         """
         self.est_iterations = est_iterations
         self.track_iterations = track_iterations
         self.debug = debug
 
-        if self.debug > 0:
+        if self.debug > 1:
             self.debug_dir = debug_dir
             self.frame_count = 0
-            os.system(
-                f"rm -rf {self.debug_dir}/* && mkdir -p {self.debug_dir}/ob_in_cam"
+
+            # 后台线程池用于异步IO操作
+            self.executor = ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="debug_io"
             )
+            if os.path.isdir(self.debug_dir):
+                shutil.rmtree(self.debug_dir)
+            os.makedirs(os.path.join(self.debug_dir, "ob_in_cam"), exist_ok=True)
+
             if self.debug >= 3:
                 os.makedirs(os.path.join(self.debug_dir, "track_vis"), exist_ok=True)
 
@@ -63,7 +69,7 @@ class PoseEstimator:
             from estimater import FoundationPose, ScorePredictor, PoseRefinePredictor
             from Utils import set_logging_format, set_seed
 
-            if self.debug > 1:
+            if self.debug > 0:
                 from Utils import draw_posed_3d_box, draw_xyz_axis
 
                 self._draw_posed_3d_box = draw_posed_3d_box
@@ -86,7 +92,7 @@ class PoseEstimator:
         self.mesh = trimesh.load(obj_path)
 
         # 预计算包围盒用于可视化调试
-        if self.debug > 1:
+        if self.debug > 0:
             to_origin, self.extents = trimesh.bounds.oriented_bounds(self.mesh)
             self.inv_to_origin = np.linalg.inv(to_origin)
             self.bbox = np.stack([-self.extents / 2, self.extents / 2], axis=0).reshape(
@@ -139,43 +145,31 @@ class PoseEstimator:
             K=K, rgb=rgb, depth=depth, ob_mask=ob_mask, iteration=self.est_iterations
         )
         del self.est_iterations
-        print(f"\033[92m[PoseEstimator]\033[0m Registration complete. Estimated pose:\n{pose}")
+        print(
+            f"\033[92m[PoseEstimator]\033[0m Registration complete. Estimated pose:\n{pose}"
+        )
 
-        if self.debug > 0:
-            # 保存当前帧姿态
-            np.savetxt(
-                os.path.join(self.debug_dir, "ob_in_cam", f"{self.frame_count}.txt"),
-                pose.reshape(4, 4),
-            )
+        if self.debug > 1:
+            # 异步执行 IO 操作
+            frame_id = self.frame_count
+            self.executor.submit(self._save_pose_matrix, frame_id, pose)
 
-            # 可视化当前帧的位姿
-            if self.debug > 1:
-                vis = self._draw_pose_vis(pose, rgb, K)
-                if threading.current_thread() is threading.main_thread():
-                    cv2.imshow("1", vis[..., ::-1])
-                    cv2.waitKey(1)
+            if self.debug >= 3:
+                # 保存可视化图像
+                self.executor.submit(self._save_debug_image, frame_id, pose, rgb, K)
 
-                # 保存追踪可视化结果
-                if self.debug >= 3:
-                    imageio.imwrite(
-                        os.path.join(
-                            self.debug_dir, "track_vis", f"{self.frame_count}.png"
-                        ),
-                        vis,
-                    )
+                import open3d
+                from Utils import depth2xyzmap, toOpen3dCloud
 
-                    import open3d
-                    from Utils import depth2xyzmap, toOpen3dCloud
-
-                    # 保存从模型坐标系变换到相机坐标系变换后的模型
-                    m = self.mesh.copy()
-                    m.apply_transform(pose)
-                    m.export(f"{self.debug_dir}/model_tf.obj")
-                    # 保存场景点云
-                    xyz_map = depth2xyzmap(depth, K)
-                    valid = depth >= 0.001
-                    pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
-                    open3d.io.write_point_cloud(f"{self.debug_dir}/scene.ply", pcd)
+                # 保存从模型坐标系变换到相机坐标系变换后的模型
+                m = self.mesh.copy()
+                m.apply_transform(pose)
+                m.export(f"{self.debug_dir}/model_tf.obj")
+                # 保存场景点云
+                xyz_map = depth2xyzmap(depth, K)
+                valid = depth >= 0.001
+                pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
+                open3d.io.write_point_cloud(f"{self.debug_dir}/scene.ply", pcd)
 
         return pose
 
@@ -192,40 +186,26 @@ class PoseEstimator:
             rgb=rgb, depth=depth, K=K, iteration=self.track_iterations
         )
 
-        if self.debug > 0:
+        if self.debug > 1:
             self.frame_count += 1
+            frame_id = self.frame_count
 
-            # 保存当前帧姿态
-            # np.savetxt(
-            #     os.path.join(self.debug_dir, "ob_in_cam", f"{self.frame_count}.txt"),
-            #     pose.reshape(4, 4),
-            # )
+            # 异步执行 IO 操作
+            self.executor.submit(self._save_pose_matrix, frame_id, pose)
 
-            # 可视化当前帧的位姿
-            if self.debug > 1:
-                vis = self._draw_pose_vis(pose, rgb, K)
-                if threading.current_thread() is threading.main_thread():
-                    cv2.imshow("1", vis[..., ::-1])
-                    cv2.waitKey(1)
-
-            # 保存追踪可视化结果
             if self.debug >= 3:
-                imageio.imwrite(
-                    os.path.join(
-                        self.debug_dir, "track_vis", f"{self.frame_count}.png"
-                    ),
-                    vis,
-                )
+                # 保存可视化图像
+                self.executor.submit(self._save_debug_image, frame_id, pose, rgb, K)
 
         return pose
 
-    def _draw_pose_vis(
+    def draw_pose_vis(
         self, pose: np.ndarray, rgb: np.ndarray, K: np.ndarray
     ) -> np.ndarray:
         center_pose = pose @ self.inv_to_origin
         vis = self._draw_posed_3d_box(K, img=rgb, ob_in_cam=center_pose, bbox=self.bbox)
         vis = self._draw_xyz_axis(
-            rgb,
+            vis,
             ob_in_cam=center_pose,
             scale=0.1,
             K=K,
@@ -234,3 +214,22 @@ class PoseEstimator:
             is_input_rgb=True,
         )
         return vis
+
+    def _save_pose_matrix(self, frame_id: int, pose: np.ndarray) -> None:
+        np.savetxt(
+            os.path.join(self.debug_dir, "ob_in_cam", f"{frame_id}.txt"),
+            pose.reshape(4, 4),
+        )
+
+    def _save_debug_image(
+        self, frame_id: int, pose: np.ndarray, rgb: np.ndarray, K: np.ndarray
+    ) -> None:
+        vis = self.draw_pose_vis(pose, rgb.copy(), K)
+        imageio.imwrite(
+            os.path.join(self.debug_dir, "track_vis", f"{frame_id}.png"), vis
+        )
+
+    def shutdown(self) -> None:
+        if self.debug > 1 and self.executor:
+            self.executor.shutdown(wait=True)  # 等待所有任务完成
+            print("[PoseEstimator] Debug thread pool shutdown complete")

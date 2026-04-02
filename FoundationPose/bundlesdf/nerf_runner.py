@@ -150,7 +150,7 @@ class NerfRunner:
     self.create_nerf()
     self.create_optimizer()
 
-    self.amp_scaler = torch.amp.grad_scaler.GradScaler(enabled=self.cfg['amp'], device="cuda")
+    self.amp_scaler = torch.amp.grad_scaler.GradScaler(device="cuda", enabled=self.cfg['amp'])
 
     self.global_step = 0
 
@@ -956,7 +956,7 @@ class NerfRunner:
       if inputs_flat.requires_grad==False:
         inputs_flat.requires_grad = True
 
-    with torch.amp.autocast_mode.autocast(enabled=self.cfg['amp'], device_type='cuda'):
+    with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=self.cfg['amp']):
       if self.cfg['i_embed'] in [3]:
         embedded[valid_samples.reshape(-1)], valid_samples_embed = self.models['embed_fn'](inputs_flat[valid_samples.reshape(-1)])
         valid_samples = valid_samples.reshape(-1)
@@ -990,7 +990,7 @@ class NerfRunner:
       embedded = torch.cat([embedded, embedded_dirs_flat], -1)
 
     outputs_flat = []
-    with torch.amp.autocast_mode.autocast(enabled=self.cfg['amp'], device_type='cuda'):
+    with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=self.cfg['amp']):
       chunk = self.cfg['netchunk']
       for i in range(0,embedded.shape[0],chunk):
         out = self.models['model'](embedded[i:i+chunk])
@@ -1020,7 +1020,7 @@ class NerfRunner:
     if not inputs_flat.requires_grad:
       inputs_flat.requires_grad = True
 
-    with torch.amp.autocast_mode.autocast(enabled=self.cfg['amp'], device_type='cuda'):
+    with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=self.cfg['amp']):
       if self.cfg['i_embed'] in [3]:
         embedded, valid_samples_embed = self.models['embed_fn'](inputs_flat)
         valid_samples = valid_samples.reshape(-1)
@@ -1035,7 +1035,7 @@ class NerfRunner:
     input_ch = embedded.shape[-1]
 
     outputs_flat = []
-    with torch.amp.autocast_mode.autocast(enabled=self.cfg['amp'], device_type='cuda'):
+    with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=self.cfg['amp']):
       chunk = self.cfg['netchunk']
       for i in range(0,embedded.shape[0],chunk):
         alpha = self.models['model'].forward_sdf(embedded[i:i+chunk])   #(N,1)

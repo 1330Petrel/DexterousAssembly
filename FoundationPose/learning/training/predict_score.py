@@ -158,7 +158,7 @@ class ScorePredictor:
     self.model.load_state_dict(ckpt)
 
     self.model.cuda().eval()
-    logging.debug("init done")
+    logging.info("init done")
 
 
   @torch.inference_mode()
@@ -194,7 +194,7 @@ class ScorePredictor:
         if pose_data.normalAs is not None:
           A = torch.cat([A, pose_data.normalAs.cuda().float()], dim=1)
           B = torch.cat([B, pose_data.normalBs.cuda().float()], dim=1)
-        with torch.amp.autocast_mode.autocast(enabled=self.amp, device_type='cuda'):
+        with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=self.amp):
           output = self.model(A, B, L=len(A))
         scores_cur = output["score_logit"].float().reshape(-1)
         ids.append(scores_cur.argmax()+b)
