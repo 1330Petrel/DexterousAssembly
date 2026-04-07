@@ -1,5 +1,6 @@
 object_6d_tracker_node:
   ros__parameters:
+    prompt_mode: "text" # "text" or "interactive"
     prompt: "wrench"
     debug_level: 1 # 0: 关闭, 1: 追踪可视化, 2: 矩阵写盘 3. 完整
     resize_scale: 0.375 # 缩放因子，用于调整输入图像大小以减小显存负担

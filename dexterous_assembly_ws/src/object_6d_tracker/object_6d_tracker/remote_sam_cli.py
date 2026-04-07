@@ -28,10 +28,10 @@ class RemoteSAMCLI:
         """
         初始化通信客户端
         :param server: 远程服务器的 IP 地址与用户名
+        :param ssh_port: SSH 端口号
         :param remote_python_exec: 服务器上 Conda 环境中 Python 解释器的绝对路径
         :param remote_script_path: 服务器上 single_image_infer.py 的绝对路径
-        :param ssh_key_path: 本地私钥路径 (如 ~/.ssh/id_rsa)，为空则使用默认系统配置
-        :param ssh_port: SSH 端口号
+        :param ssh_key_path: 本地私钥路径 (如 ~/.ssh/id_rsa)，为空则使用默认配置
         """
         self.server = server
         self.ssh_port = str(ssh_port)
@@ -63,16 +63,29 @@ class RemoteSAMCLI:
         cmd.extend([src, dst])
         return cmd
 
-    def get_mask(self, image_np: np.ndarray, prompt: str) -> np.ndarray:
+    def get_mask(
+        self, image_np: np.ndarray, prompt_type: str, prompt_data: str | list
+    ) -> np.ndarray:
         """
         传入本地图像和 Prompt，返回推断的 Mask
 
         :param image_np: 本地捕获的 RGB 图像 (H, W, 3), OpenCV 格式 (BGR)
-        :param prompt: 目标物体的文本描述，如 'hammer'
+        :param prompt_type: 'text', 'bbox', 'point'
+        :param prompt_data: 对应的字符串或坐标列表
         :return: 二值化 Mask 图像 (H, W), dtype=uint8
         """
         start_time = time.time()
-        print(f"[RemoteSAMCLI] Starting remote inference for prompt: '{prompt}'")
+        if prompt_type == "text":
+            prompt_args = f"--prompt '{prompt_data}'"
+        elif prompt_type == "bbox":
+            prompt_args = f"--bbox {prompt_data[0]} {prompt_data[1]} {prompt_data[2]} {prompt_data[3]}"
+        elif prompt_type == "point":
+            prompt_args = f"--point {prompt_data[0]} {prompt_data[1]}"
+        else:
+            raise ValueError("Unsupported prompt type. Use 'text', 'bbox', or 'point'")
+        print(
+            f"[RemoteSAMCLI] Starting remote inference for {prompt_type}: '{prompt_data}'"
+        )
 
         # 1. 保存图像到本地临时路径
         cv2.imwrite(self.local_tmp_img, image_np)
@@ -97,8 +110,7 @@ class RemoteSAMCLI:
                 "export HF_ENDPOINT=https://hf-mirror.com && "
                 f"{self.remote_python_exec} {self.remote_script_path} "
                 f"--img {self.remote_tmp_img} "
-                f"--prompt {prompt} "
-                f"--out {self.remote_tmp_mask}"
+                f"--out {self.remote_tmp_mask} {prompt_args}"
             )
             ssh_exec_cmd = self._build_ssh_cmd(infer_cmd)
             result = subprocess.run(

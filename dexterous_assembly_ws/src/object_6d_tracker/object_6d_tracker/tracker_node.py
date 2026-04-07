@@ -37,6 +37,7 @@ class TrackerNode(Node):
         self.declare_parameters(
             namespace="",
             parameters=[
+                ("prompt_mode", "text"),  # 'text', 'interactive'
                 ("prompt", "wrench"),
                 ("debug_level", 2),
                 ("resize_scale", 0.375),  # 显存优化：图像缩放比例
@@ -62,6 +63,21 @@ class TrackerNode(Node):
             ],
         )
 
+        self.p_mode = self.get_parameter("prompt_mode").value
+        prompt = self.get_parameter("prompt").value
+        if self.p_mode not in ["text", "interactive"]:
+            mode = "interactive" if prompt == "" else "text"
+            self.get_logger().warn(
+                f"Invalid prompt_mode '{self.p_mode}', defaulting to '{mode}'"
+            )
+            self.p_mode = mode
+        if self.p_mode == "text":
+            if prompt == "":
+                self.get_logger().warn("Got Empty text prompt, switch to interactive")
+                self.p_mode = "interactive"
+            else:
+                self.p_prompt = prompt
+
         # 打包 Remote SAM CLI 配置
         sam_cfg = {
             "server": self.get_parameter("server").value,
@@ -71,7 +87,7 @@ class TrackerNode(Node):
             "ssh_key_path": self.get_parameter("ssh_key_path").value,
         }
         # 打包 Foundation Pose 配置
-        self.fp_cfg = {
+        fp_cfg = {
             "fp_root_dir": self.get_parameter("fp_root_dir").value,
             "obj_path": self.get_parameter("obj_path").value,
             "est_iterations": self.get_parameter("est_iterations").value,
@@ -80,7 +96,6 @@ class TrackerNode(Node):
         }
 
         self.p_debug = True if self.get_parameter("debug_level").value > 0 else False
-        self.p_prompt = self.get_parameter("prompt").value
         self.p_resize_scale = self.get_parameter("resize_scale").value
 
         self.p_cam_frame = self.get_parameter("camera_frame_id").value
@@ -96,7 +111,6 @@ class TrackerNode(Node):
         # 协同标志位
         self.mask_ready = False
         self.fp_ready = False
-        self.fp_initialization_started = False
 
         self.first_frame_data = None
         self.first_mask = None
@@ -105,6 +119,9 @@ class TrackerNode(Node):
         self.cached_K = None
         self.sam_cli = RemoteSAMCLI(**sam_cfg)
         self.estimator = None
+        threading.Thread(
+            target=self.task_init_foundation_pose, args=(fp_cfg,), daemon=True
+        ).start()  # 后台 FP 初始化线程: 加载 Foundation Pose 环境
 
         # FPS 统计相关
         self.frame_count = 0
@@ -223,9 +240,19 @@ class TrackerNode(Node):
             self.run_tracking(cv_rgb, cv_depth_m, rgb_msg.header.stamp)
 
     def handle_initialization(self, rgb: np.ndarray, depth: np.ndarray, stamp) -> None:
-        self.get_logger().info(
-            "Got the first synchronized frame, starting initialization..."
-        )
+        self.get_logger().info("Got the first frame, starting initialization...")
+        bgr_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+        if self.p_mode == "interactive":
+            selector = utils.InteractiveSelector()
+            prompt_type, prompt_data = selector.get_selection(bgr_image)
+
+            if prompt_type is None:
+                self.get_logger().warning("Selection canceled. Wait for next frame...")
+                return
+        else:
+            prompt_type = "text"
+            prompt_data = self.p_prompt
 
         with self.init_lock:
             self.state = State.INITIALIZING
@@ -235,23 +262,19 @@ class TrackerNode(Node):
 
             # 启动 SSH 线程: 请求服务器 Grounded-SAM-2 推理
             threading.Thread(
-                target=self.task_ssh_sam2, args=(rgb, current_epoch), daemon=True
+                target=self.task_ssh_sam2,
+                args=(bgr_image, prompt_type, prompt_data, current_epoch),
+                daemon=True,
             ).start()
 
-            # 启动 FP 初始化线程: 加载 Foundation Pose 环境
-            if not self.fp_initialization_started:
-                self.fp_initialization_started = True
-                threading.Thread(
-                    target=self.task_init_foundation_pose, daemon=True
-                ).start()
-
-    def task_ssh_sam2(self, rgb_image: np.ndarray, request_epoch: int) -> None:
+    def task_ssh_sam2(
+        self, bgr_image: np.ndarray, prompt_type: str, prompt_data, request_epoch: int
+    ) -> None:
         """执行远程 SSH 推理"""
         self.get_logger().info("[SSH] Requesting SAM2 Mask via SSH...")
         try:
-            # 把 RGB 转为 BGR 再给通信端去存
-            bgr_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
-            mask = self.sam_cli.get_mask(bgr_image, self.p_prompt)
+            # 通信端存 BGR
+            mask = self.sam_cli.get_mask(bgr_image, prompt_type, prompt_data)
 
             if not np.any(mask):
                 # 退回 WAIT_FIRST_FRAME 重新尝试
@@ -287,12 +310,11 @@ class TrackerNode(Node):
                 ):
                     self.state = State.WAIT_FIRST_FRAME
 
-    def task_init_foundation_pose(self) -> None:
+    def task_init_foundation_pose(self, fp_config: dict) -> None:
         """初始化 Foundation Pose 权重"""
         self.get_logger().info("[Local] Initializing Foundation Pose environment...")
         try:
-            self.estimator = PoseEstimator(**self.fp_cfg)
-            del self.fp_cfg
+            self.estimator = PoseEstimator(**fp_config)
 
             with self.init_lock:
                 self.fp_ready = True

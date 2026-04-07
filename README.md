@@ -139,6 +139,7 @@ ros2 launch azure_kinect_ros_driver driver.launch.py \
 
 | 参数                 | 说明                        |
 | -------------------- | --------------------------- |
+| `prompt_mode`        | 获取 SAM 2 prompt 方式      |
 | `prompt`             | 目标文本提示词              |
 | `debug_level`        | 调试等级（0~3）             |
 | `resize_scale`       | 输入缩放比例，降低显存占用  |
