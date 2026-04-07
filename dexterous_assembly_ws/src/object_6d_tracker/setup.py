@@ -29,8 +29,9 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            # 定义 ROS2 节点的可执行命令: tracker_node
-            "tracker_node = object_6d_tracker.tracker_node:main"
+            # 定义 ROS2 节点的可执行命令
+            "tracker_node = object_6d_tracker.tracker_node:main",
+            "teleop = object_6d_tracker.tracker_teleop:main",
         ],
     },
 )

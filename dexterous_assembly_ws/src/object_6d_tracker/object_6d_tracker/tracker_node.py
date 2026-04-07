@@ -5,6 +5,7 @@ import message_filters
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 from tf2_ros import TransformBroadcaster
+from std_srvs.srv import Trigger
 
 import cv2
 from enum import Enum
@@ -62,7 +63,7 @@ class TrackerNode(Node):
         )
 
         # 打包 Remote SAM CLI 配置
-        self.sam_cfg = {
+        sam_cfg = {
             "server": self.get_parameter("server").value,
             "ssh_port": self.get_parameter("ssh_port").value,
             "remote_python_exec": self.get_parameter("remote_python_exec").value,
@@ -90,6 +91,7 @@ class TrackerNode(Node):
         # ==========================================================
         self.state = State.WAIT_FIRST_FRAME
         self.init_lock = threading.Lock()
+        self.init_epoch = 0  # 会话纪元计数器
 
         # 协同标志位
         self.mask_ready = False
@@ -101,7 +103,7 @@ class TrackerNode(Node):
 
         # 算法占位符
         self.cached_K = None
-        self.sam_cli = None
+        self.sam_cli = RemoteSAMCLI(**sam_cfg)
         self.estimator = None
 
         # FPS 统计相关
@@ -127,7 +129,7 @@ class TrackerNode(Node):
         #     depth=5,
         # )
 
-        # 订阅话题并进行时间戳软同步 (slop=0.05秒容忍度)
+        # 订阅话题并进行时间戳软同步
         self.rgb_sub = message_filters.Subscriber(
             self,
             Image,
@@ -145,10 +147,13 @@ class TrackerNode(Node):
         )
         self.ts.registerCallback(self.sync_callback)
 
+        # 重置服务
+        self.create_service(Trigger, "~/reset", self.reset_callback)
+
         if self.p_debug:
-            # 初始化异步可视化组件
+            # 异步可视化组件
             self.vis_pub = self.create_publisher(Image, "~/debug_image", 10)
-            self.vis_queue = queue.Queue(maxsize=4)
+            self.vis_queue = queue.Queue(maxsize=2)
 
         self.get_logger().info(
             f"Object 6D Tracker Node initialized with prompt: '{self.p_prompt}'"
@@ -217,61 +222,77 @@ class TrackerNode(Node):
         elif self.state == State.TRACKING:
             self.run_tracking(cv_rgb, cv_depth_m, rgb_msg.header.stamp)
 
-    def handle_initialization(self, rgb, depth, stamp) -> None:
+    def handle_initialization(self, rgb: np.ndarray, depth: np.ndarray, stamp) -> None:
         self.get_logger().info(
             "Got the first synchronized frame, starting initialization..."
         )
-        self.state = State.INITIALIZING
 
-        # 暂存第一帧用于 Register
-        self.first_frame_data = (rgb, depth, stamp)
-
-        # 启动 SSH 线程: 请求服务器 Grounded-SAM-2 推理
-        threading.Thread(target=self.task_ssh_sam2, args=(rgb,), daemon=True).start()
-
-        # 启动 FP 初始化线程: 加载 Foundation Pose 环境
         with self.init_lock:
+            self.state = State.INITIALIZING
+            self.first_frame_data = (rgb, depth, stamp)
+            self.init_epoch += 1
+            current_epoch = self.init_epoch
+
+            # 启动 SSH 线程: 请求服务器 Grounded-SAM-2 推理
+            threading.Thread(
+                target=self.task_ssh_sam2, args=(rgb, current_epoch), daemon=True
+            ).start()
+
+            # 启动 FP 初始化线程: 加载 Foundation Pose 环境
             if not self.fp_initialization_started:
                 self.fp_initialization_started = True
                 threading.Thread(
                     target=self.task_init_foundation_pose, daemon=True
                 ).start()
 
-    def task_ssh_sam2(self, rgb_image) -> None:
+    def task_ssh_sam2(self, rgb_image: np.ndarray, request_epoch: int) -> None:
         """执行远程 SSH 推理"""
         self.get_logger().info("[SSH] Requesting SAM2 Mask via SSH...")
         try:
-            # 实例化远程通信客户端
-            if self.sam_cli is None:
-                self.sam_cli = RemoteSAMCLI(**self.sam_cfg)
-
             # 把 RGB 转为 BGR 再给通信端去存
             bgr_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
             mask = self.sam_cli.get_mask(bgr_image, self.p_prompt)
 
             if not np.any(mask):
-                self.get_logger().warning("[SSH] Got empty mask. Retrying...")
                 # 退回 WAIT_FIRST_FRAME 重新尝试
-                self.state = State.WAIT_FIRST_FRAME
+                with self.init_lock:
+                    if (
+                        self.state == State.INITIALIZING
+                        and self.init_epoch == request_epoch
+                    ):
+                        self.get_logger().warning("[SSH] Got empty mask. Retrying...")
+                        self.state = State.WAIT_FIRST_FRAME
                 return
 
             with self.init_lock:
+                if self.state != State.INITIALIZING or self.init_epoch != request_epoch:
+                    self.get_logger().warning(
+                        "[SSH] Received mask for an outdated initialization epoch, discarded"
+                    )
+                    return
+
                 self.first_mask = mask
                 self.mask_ready = True
                 self.check_ready_and_register()
 
         except Exception as e:
             self.get_logger().error(
-                f"[SSH Error] Failed to get mask, please check network and server configuration: {e}"
+                f"[SSH][Error] Failed to get mask, please check network and server configuration: {e}"
             )
             # 退回 WAIT_FIRST_FRAME 重新尝试
-            self.state = State.WAIT_FIRST_FRAME
+            with self.init_lock:
+                if (
+                    self.state == State.INITIALIZING
+                    and self.init_epoch == request_epoch
+                ):
+                    self.state = State.WAIT_FIRST_FRAME
 
     def task_init_foundation_pose(self) -> None:
         """初始化 Foundation Pose 权重"""
         self.get_logger().info("[Local] Initializing Foundation Pose environment...")
         try:
             self.estimator = PoseEstimator(**self.fp_cfg)
+            del self.fp_cfg
 
             with self.init_lock:
                 self.fp_ready = True
@@ -279,7 +300,7 @@ class TrackerNode(Node):
 
         except Exception as e:
             self.get_logger().error(
-                f"[Local Error] Foundation Pose initialization failed: {e}"
+                f"[Local][Error] Foundation Pose initialization failed: {e}"
             )
             # 直接让节点退出
             if rclpy.ok():
@@ -319,10 +340,8 @@ class TrackerNode(Node):
                 )
                 self.state = State.TRACKING
                 self.last_fps_time = time.time()
-                del self.first_frame_data, self.first_mask
-                del self.sam_cli, self.sam_cfg, self.fp_cfg
-                del self.mask_ready, self.fp_ready, self.fp_initialization_started
-                del self.init_lock
+                self.first_frame_data = None
+                self.first_mask = None
 
             except Exception as e:
                 self.get_logger().error(f"Registration failed: {e}")
@@ -331,7 +350,7 @@ class TrackerNode(Node):
                     rclpy.shutdown()
                 self.destroy_node()
 
-    def run_tracking(self, rgb, depth, stamp) -> None:
+    def run_tracking(self, rgb: np.ndarray, depth: np.ndarray, stamp) -> None:
         """连续帧时序高频追踪逻辑"""
         try:
             # 调用 Foundation Pose 的时序追踪模块
@@ -372,10 +391,60 @@ class TrackerNode(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to publish TF: {e}")
 
-    def vis_worker(self):
+    def reset_callback(self, request, response) -> Trigger.Response:
+        result, message = self.reset_tracker()
+        response.success = result
+        response.message = message
+        return response
+
+    def reset_tracker(self) -> tuple[bool, str]:
+        """
+        退回初始化阶段，清理状态并准备重新捕获第一帧
+        """
+        if self.state == State.WAIT_FIRST_FRAME:
+            return False, "Tracker is already in WAIT_FIRST_FRAME state"
+
+        with self.init_lock:
+            if self.state == State.INITIALIZING:
+                self.get_logger().warn(
+                    "Initialization canceled, Resetting to WAIT_FIRST_FRAME..."
+                )
+            else:
+                self.get_logger().warn(
+                    "Tracking stopped, Resetting to WAIT_FIRST_FRAME..."
+                )
+
+            # 1. 状态机切回
+            self.state = State.WAIT_FIRST_FRAME
+
+            # 2. 清理内参缓存并重新订阅 CameraInfo
+            self.cached_K = None
+            if hasattr(self, "info_sub") and self.info_sub is not None:
+                self.destroy_subscription(self.info_sub)
+
+            info_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, depth=1)
+            self.info_sub = self.create_subscription(
+                CameraInfo, "/rgb/camera_info", self.info_callback, info_qos
+            )
+
+            # 3. 清理数据与掩码缓存
+            self.first_frame_data = None
+            self.first_mask = None
+            self.mask_ready = False
+
+            # 4. 清理 Debug 队列
+            while not self.debug_queue.empty():
+                try:
+                    self.debug_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+            return True, "Tracker reseted, waiting for new initialization..."
+
+    def vis_worker(self) -> None:
         """后台渲染线程处理 OpenCV 绘制与消息序列化"""
         self.get_logger().info(
-            "\033[92m[Vis]\033[0m Async Visualization Worker started, run 'rqt_image_view /object_6d_tracker_node/debug_image'"
+            "\033[92m[Vis]\033[0m Visualization Worker started, run 'rqt_image_view /object_6d_tracker_node/debug_image'"
         )
         while rclpy.ok():
             try:

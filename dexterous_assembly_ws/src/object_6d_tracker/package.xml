@@ -15,6 +15,7 @@
     <depend>cv_bridge</depend>
     <depend>tf2_ros</depend>
     <depend>message_filters</depend>
+    <depend>std_srvs</depend>
 
     <!-- Python 科学计算与外设依赖 -->
     <exec_depend>python3-numpy</exec_depend>

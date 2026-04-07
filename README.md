@@ -88,10 +88,10 @@ source install/setup.bash
 cd kinect_ros2
 source install/setup.bash
 ros2 launch azure_kinect_ros_driver driver.launch.py \
-	depth_mode:=NFOV_UNBINNED \
-	fps:=30 \
-	point_cloud:=false \
-	rgb_point_cloud:=false
+ depth_mode:=NFOV_UNBINNED \
+ fps:=30 \
+ point_cloud:=false \
+ rgb_point_cloud:=false
 ```
 
 ### 启动跟踪节点
@@ -101,41 +101,60 @@ ros2 launch azure_kinect_ros_driver driver.launch.py \
 2. 根据需要修改 `src/object_6d_tracker/config/tracker_params.yaml` 中的参数。
 
 3. 启动跟踪节点：
-	```bash
-	cd dexterous_assembly_ws
-	conda activate fdp
-	source /opt/ros/humble/setup.bash
-	source install/setup.bash
 
-	# 可选：网络缓存调优（弱网/高吞吐场景）
-	sudo sysctl -w net.core.rmem_max=26214400
-	sudo sysctl -w net.core.rmem_default=26214400
+    ```bash
+    cd dexterous_assembly_ws
+    conda activate fdp
+    source /opt/ros/humble/setup.bash
+    source install/setup.bash
 
-	ros2 launch object_6d_tracker tracker.launch.py
-	```
+    # 可选：网络缓存调优（弱网/高吞吐场景）
+    sudo sysctl -w net.core.rmem_max=26214400
+    sudo sysctl -w net.core.rmem_default=26214400
+
+    ros2 launch object_6d_tracker tracker.launch.py
+    ```
+
+4. 使用 `rqt_image_view` 观察调试图像：
+
+    ```bash
+    ros2 run rqt_image_view rqt_image_view --ros-args -r /image:=/object_6d_tracker_node/debug_image
+    ```
+
+5. 重置跟踪：
+
+    ```bash
+    ros2 service call /object_6d_tracker_node/reset std_srvs/srv/Trigger
+    ```
+
+    或者运行 `tracker_teleop.py` 节点并在终端输入 `esc`：
+
+    ```bash
+    ros2 run object_6d_tracker tracker_teleop
+    ```
 
 ## 关键参数说明
 
 参数文件：`src/object_6d_tracker/config/tracker_params.yaml`
 
-| 参数 | 说明 |
-|---|---|
-| `prompt` | 目标文本提示词 |
-| `debug_level` | 调试等级（0~3） | 
-| `resize_scale` | 输入缩放比例，降低显存占用 |
-| `fp_root_dir` | FoundationPose 根目录 |
-| `obj_path` | 目标模型 `.obj` 路径 |
-| `est_iterations` | 首帧配准迭代次数 |
-| `track_iterations` | 跟踪迭代次数 |
-| `server` | 远程推理服务器（user@host） |
-| `ssh_port` | 远程 SSH 端口 |
-| `remote_python_exec` | 远程 python 路径 |
-| `remote_script_path` | 远程推理脚本路径 |
-| `ssh_key_path` | 本地 SSH 私钥路径 |
-| `queue_size` | 同步队列大小 |
-| `slop` | RGB-D 时间同步容忍（秒） |
-| `camera_frame_id` | TF 父坐标系 |
-| `object_frame_id` | TF 子坐标系 |
+| 参数                 | 说明                        |
+| -------------------- | --------------------------- |
+| `prompt`             | 目标文本提示词              |
+| `debug_level`        | 调试等级（0~3）             |
+| `resize_scale`       | 输入缩放比例，降低显存占用  |
+| `fp_root_dir`        | FoundationPose 根目录       |
+| `obj_path`           | 目标模型 `.obj` 路径        |
+| `est_iterations`     | 首帧配准迭代次数            |
+| `track_iterations`   | 跟踪迭代次数                |
+| `server`             | 远程推理服务器（user@host） |
+| `ssh_port`           | 远程 SSH 端口               |
+| `remote_python_exec` | 远程 python 路径            |
+| `remote_script_path` | 远程推理脚本路径            |
+| `ssh_key_path`       | 本地 SSH 私钥路径           |
+| `queue_size`         | 同步队列大小                |
+| `slop`               | RGB-D 时间同步容忍（秒）    |
+| `camera_frame_id`    | TF 父坐标系                 |
+| `object_frame_id`    | TF 子坐标系                 |
 
 ## 项目结构
 
@@ -146,6 +165,7 @@ dexterous_assembly_ws/
 │   ├── config/tracker_params.yaml
 │   ├── object_6d_tracker/
 │   │   ├── tracker_node.py
+│   │   ├── tracker_teleop.py
 │   │   ├── pose_estimator.py
 │   │   ├── remote_sam_cli.py
 │   │   └── utils.py

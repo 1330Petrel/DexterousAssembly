@@ -140,11 +140,9 @@ class PoseEstimator:
         """
         # Foundation Pose 内部需要布尔类型的 mask
         ob_mask = mask.astype(bool)
-
         pose = self.est.register(
             K=K, rgb=rgb, depth=depth, ob_mask=ob_mask, iteration=self.est_iterations
         )
-        del self.est_iterations
         print(
             f"\033[92m[PoseEstimator]\033[0m Registration complete. Estimated pose:\n{pose}"
         )
