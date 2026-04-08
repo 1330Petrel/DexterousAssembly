@@ -24,7 +24,7 @@ class TrackerTeleopNode(Node):
         future = self.reset_cli.call_async(req)
         future.add_done_callback(self.response_callback)
 
-    def response_callback(self, future: rclpy.task.Future) -> None:
+    def response_callback(self, future: rclpy.Future) -> None:
         try:
             response = future.result()
             if response.success:

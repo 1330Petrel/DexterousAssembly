@@ -455,9 +455,9 @@ class TrackerNode(Node):
             self.mask_ready = False
 
             # 4. 清理 Debug 队列
-            while not self.debug_queue.empty():
+            while not self.vis_queue.empty():
                 try:
-                    self.debug_queue.get_nowait()
+                    self.vis_queue.get_nowait()
                 except queue.Empty:
                     break
 

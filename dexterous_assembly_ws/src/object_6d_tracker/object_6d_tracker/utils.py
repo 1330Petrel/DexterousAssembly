@@ -24,7 +24,7 @@ def matrix_to_tf_components(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]
 
     # 提取旋转部分并转换为四元数
     r = Rotation.from_matrix(matrix[0:3, 0:3])
-    quaternion = r.as_quat()  # 默认返回顺序是 ROS 期望的 [x, y, z, w]
+    quaternion = r.as_quat(canonical=False)  # 默认返回顺序是 ROS 期望的 [x, y, z, w]
 
     return translation, quaternion
 
