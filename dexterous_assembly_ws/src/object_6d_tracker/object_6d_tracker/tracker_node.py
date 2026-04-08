@@ -17,7 +17,7 @@ import torch
 
 from .remote_sam_cli import RemoteSAMCLI
 from .pose_estimator import PoseEstimator
-from . import utils
+from .utils import create_transform_stamped, check_image_is_valid, InteractiveSelector
 
 
 # 状态流转: WAIT_FIRST_FRAME -> INITIALIZING -> TRACKING
@@ -41,6 +41,8 @@ class TrackerNode(Node):
                 ("prompt", "wrench"),
                 ("debug_level", 2),
                 ("resize_scale", 0.375),  # 显存优化：图像缩放比例
+                ("enable_2d_tracker", True),
+                ("enable_kf", True),
                 ("fp_root_dir", "/home/x/DexterousAssembly/FoundationPose"),
                 (
                     "obj_path",
@@ -48,6 +50,10 @@ class TrackerNode(Node):
                 ),
                 ("est_iterations", 5),
                 ("track_iterations", 2),
+                ("kf_noise_scale", 0.05),
+                ("cutie_seg_threshold", 0.1),
+                ("cutie_erosion_size", 5),
+                ("cutie_half_precision", False),
                 ("server", "a@x.x.x.x"),
                 ("ssh_port", 0),
                 ("remote_python_exec", "/home/x/miniconda3/envs/sam2/bin/python"),
@@ -88,10 +94,16 @@ class TrackerNode(Node):
         }
         # 打包 Foundation Pose 配置
         fp_cfg = {
+            "enable_2d_tracker": self.get_parameter("enable_2d_tracker").value,
+            "enable_kf": self.get_parameter("enable_kf").value,
             "fp_root_dir": self.get_parameter("fp_root_dir").value,
             "obj_path": self.get_parameter("obj_path").value,
             "est_iterations": self.get_parameter("est_iterations").value,
             "track_iterations": self.get_parameter("track_iterations").value,
+            "kf_noise_scale": self.get_parameter("kf_noise_scale").value,
+            "cutie_seg_threshold": self.get_parameter("cutie_seg_threshold").value,
+            "cutie_erosion_size": self.get_parameter("cutie_erosion_size").value,
+            "cutie_half_precision": self.get_parameter("cutie_half_precision").value,
             "debug": self.get_parameter("debug_level").value,
         }
 
@@ -228,7 +240,7 @@ class TrackerNode(Node):
             return
 
         # 检查图像有效性
-        if not utils.check_image_is_valid(cv_rgb) or cv_depth_m.size == 0:
+        if not check_image_is_valid(cv_rgb) or cv_depth_m.size == 0:
             self.get_logger().warning("Invalid RGB or Depth image received, skipping.")
             return
 
@@ -244,7 +256,7 @@ class TrackerNode(Node):
         bgr_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
         if self.p_mode == "interactive":
-            selector = utils.InteractiveSelector()
+            selector = InteractiveSelector()
             prompt_type, prompt_data = selector.get_selection(bgr_image)
 
             if prompt_type is None:
@@ -402,7 +414,7 @@ class TrackerNode(Node):
         提取 4x4 矩阵的平移和旋转广播至 ROS2 TF 树
         """
         try:
-            t_msg = utils.create_transform_stamped(
+            t_msg = create_transform_stamped(
                 matrix=pose_matrix,
                 frame_id=self.p_cam_frame,
                 child_frame_id=self.p_obj_frame,

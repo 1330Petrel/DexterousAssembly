@@ -77,6 +77,123 @@ def check_image_is_valid(image: np.ndarray) -> bool:
     return True
 
 
+def get_6d_pose_arr_from_mat(pose_matrix: np.ndarray) -> np.ndarray:
+    """
+    将 4x4 位姿矩阵转换为 6 自由度数组 [tx, ty, tz, rx, ry, rz] 供卡尔曼滤波使用
+    """
+    xyz = pose_matrix[:3, 3]
+    rotation_matrix = pose_matrix[:3, :3]
+
+    # 使用 'XYZ' 顺序(Roll, Pitch, Yaw) 输出弧度
+    euler_angles = Rotation.from_matrix(rotation_matrix).as_euler("xyz", degrees=False)
+
+    # 拼接返回 [tx, ty, tz, rx, ry, rz]
+    return np.r_[xyz, euler_angles]
+
+
+def get_mat_from_6d_pose_arr(pose_arr: np.ndarray) -> np.ndarray:
+    """
+    将 KF 输出的 6 自由度数组 [tx, ty, tz, rx, ry, rz] 还原回
+    4x4 位姿矩阵供 FoundationPose 的 est.pose_last 接收
+    """
+    xyz = pose_arr[:3]
+    euler_angles = pose_arr[3:6]
+
+    # 从欧拉角恢复旋转矩阵
+    rotation_matrix = Rotation.from_euler(
+        "xyz", euler_angles, degrees=False
+    ).as_matrix()
+
+    # 构建 4x4 矩阵
+    transformation_matrix = np.eye(4)
+    transformation_matrix[:3, :3] = rotation_matrix
+    transformation_matrix[:3, 3] = xyz
+
+    return transformation_matrix
+
+
+def extract_depth(
+    depth_map: np.ndarray,
+    centroid_x: int,
+    centroid_y: int,
+    object_mask: Optional[np.ndarray] = None,
+    window_size: int = 5,
+) -> float:
+    """
+    从深度图中提取指定像素的深度值 Z
+
+    :param depth_map: 对齐的深度图 (H, W), 单位为米 (m)
+    :param centroid_x: 2D 追踪器提供的物理质心 X
+    :param centroid_y: 2D 追踪器提供的物理质心 Y
+    :param object_mask: (可选) 2D 追踪器输出的物体掩码，用于剔除背景深度
+    :param window_size: 采样窗口大小
+    """
+    h, w = depth_map.shape
+    half = window_size // 2
+
+    # 计算边界安全的窗口范围
+    x_min = max(0, centroid_x - half)
+    x_max = min(w, centroid_x + half + 1)
+    y_min = max(0, centroid_y - half)
+    y_max = min(h, centroid_y + half + 1)
+
+    # 提取 ROI 深度块
+    patch = depth_map[y_min:y_max, x_min:x_max]
+
+    # 剔除无效深度
+    valid_mask = (patch > 0.01) & (patch < 5.0)  # 范围在 0.01m 到 5m 之间
+    if object_mask is not None:
+        mask_patch = object_mask[y_min:y_max, x_min:x_max]
+        valid_mask &= mask_patch > 0  # 只保留掩码内的有效像素
+    valid_depths = patch[valid_mask]
+
+    if len(valid_depths) > 0:
+        # 使用中值滤波
+        return float(np.median(valid_depths))
+
+    # 窗口内全是死像素，返回 -1 表示采样失败
+    return -1.0
+
+
+def get_xyz_from_image(
+    K: np.ndarray,
+    depth_map: np.ndarray,
+    centroid_x: int,
+    centroid_y: int,
+    old_tz: float,
+    object_mask: Optional[np.ndarray] = None,
+) -> tuple[float, float, float]:
+    """
+    根据 2D 追踪器提供的图像像素点 (x, y)，从真实深度图中读取 tz，
+    通过相机内参逆投影出 3D (tx, ty, tz)
+
+    :param K: 3x3 相机内参矩阵
+    :param depth_map: 当前帧的深度图 (单位: 米)
+    :param centroid_x, centroid_y: 追踪器提取出的物体质心像素坐标
+    :param old_tz: 上一帧记忆的深度值 (深度采样失败时使用)
+    :param object_mask: Cutie 输出的高精度掩码 (用于局部深度采样)
+    :return: 修正后的 (tx, ty, tz)
+    """
+    # 1. 从深度图中采样 tz
+    tz = extract_depth(depth_map, centroid_x, centroid_y, object_mask)
+    # 深度采样失败沿用 FoundationPose 上一帧记忆的深度
+    if tz <= 0.0:
+        print(
+            f"\033[93m[PoseEstimator][Warning]\033[0m Depth sampling failed at "
+            f"({centroid_x}, {centroid_y}); Using old tz: {old_tz:.3f} m"
+        )
+        tz = old_tz
+
+    # 2. 逆投影出 tx 和 ty
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+
+    tx = (centroid_x - cx) * tz / fx
+    ty = (centroid_y - cy) * tz / fy
+
+    return float(tx), float(ty), float(tz)
+
+
 class InteractiveSelector:
     """OpenCV 交互式框选/点选工具"""
 

@@ -1,6 +1,6 @@
 # DexterousAssembly: Object 6D Tracker (ROS2)
 
-基于 [FoundationPose](https://github.com/NVlabs/FoundationPose) 和 [Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2) 开发的面向灵巧装配场景的 6D 位姿跟踪系统：
+基于 [FoundationPose](https://github.com/NVlabs/FoundationPose), [Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2)  和 [CUTIE](https://github.com/hkchengrex/CUTIE) 开发的面向灵巧装配场景的 6D 位姿跟踪系统：
 
 - 远程 Grounded-SAM-2 用于首帧目标分割。
 - 本地 FoundationPose 用于首帧配准与后续高速追踪。
@@ -54,7 +54,7 @@ python -m pip install visdom --no-build-isolation
 python -m pip install -r requirements.txt
 
 # nvdiffrast 和 pytorch3d
-python -m pip install -no-build-isolation --no-cache-dir git+https://github.com/NVlabs/nvdiffrast.git
+python -m pip install --no-build-isolation --no-cache-dir git+https://github.com/NVlabs/nvdiffrast.git
 python -m pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable" --no-build-isolation
 
 # Build extensions (5090: 12.0, 4090: 8.9, 3090: 8.6)
@@ -68,6 +68,14 @@ python -m pip install --no-cache-dir kaolin==0.18.0 -f https://nvidia-kaolin.s3.
 
 ```bash
 conda install -c conda-forge "gdal>=3.6,<3.8" "libtiff>=4.5,<4.7" --update-deps
+```
+
+### CUTIE 依赖
+
+```bash
+cd Cutie
+pip install -e .
+python cutie/utils/download_models.py
 ```
 
 ### ROS2 包安装
@@ -167,9 +175,11 @@ dexterous_assembly_ws/
 │   ├── object_6d_tracker/
 │   │   ├── tracker_node.py
 │   │   ├── tracker_teleop.py
+│   │   ├── kalman_filter_6d.py
 │   │   ├── pose_estimator.py
 │   │   ├── remote_sam_cli.py
-│   │   └── utils.py
+│   │   ├── utils.py
+│   │   └── vot_wrapper.py
 │   └── resource/
 └── README.md
 ```
@@ -178,3 +188,4 @@ dexterous_assembly_ws/
 
 - [FoundationPose](https://github.com/NVlabs/FoundationPose)
 - [Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2)
+- [CUTIE](https://github.com/hustvl/CUTIE)

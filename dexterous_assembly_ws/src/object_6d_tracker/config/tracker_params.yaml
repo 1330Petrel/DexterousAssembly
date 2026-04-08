@@ -7,9 +7,19 @@ object_6d_tracker_node:
 
     # --- Foundation Pose 本地算法配置 ---
     fp_root_dir: "/home/x/DexterousAssembly/FoundationPose"
-    obj_path: "/home/x/DexterousAssembly/dexterous_assembly_ws/src/object_6d_tracker/resource/models/sam3d/006_wrench_aligned.obj"
+    obj_path: "/home/x/DexterousAssembly/dexterous_assembly_ws/src/object_6d_tracker/resource/models/wrench/006_wrench_aligned.obj"
     est_iterations: 5
     track_iterations: 2
+
+    # --- CUTIE 配置 ---
+    enable_2d_tracker: True
+    cutie_seg_threshold: 0.1 # 分割阈值
+    cutie_erosion_size: 5 # 腐蚀核大小
+    cutie_half_precision: False # 是否使用半精度浮点数
+
+    # --- 卡尔曼滤波器配置 ---
+    enable_kf: True
+    kf_noise_scale: 0.05 # 卡尔曼滤波器噪声系数
 
     # --- Grounded-SAM-2 远程服务器通信配置 ---
     server: "a@x.x.x.x"
